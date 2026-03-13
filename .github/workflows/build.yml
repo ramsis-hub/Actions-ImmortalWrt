@@ -11,27 +11,23 @@ on:
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-23.05
-  FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: .config
-  DIY_P1_SH: diy1.sh
-  DIY_P2_SH: diy2.sh
-  UPLOAD_BIN_DIR: false
-  UPLOAD_FIRMWARE: true
+  DIY_SH: diy.sh
   TZ: Asia/Shanghai
 
 jobs:
   build:
-    runs-on: ubuntu-22.04 # More stable for older toolchains
+    runs-on: ubuntu-22.04
 
     steps:
-      - name: 1. Checkout Branch
+      - name: 1. Checkout Project
         uses: actions/checkout@v4
 
       - name: 2. Initialization Environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /cache /usr/lib/jvm
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo apt update
           sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
           sudo timedatectl set-timezone "$TZ"
@@ -41,11 +37,10 @@ jobs:
       - name: 3. Clone Source Code
         working-directory: /workdir
         run: |
-          df -hT $PWD
           git clone $REPO_URL -b $REPO_BRANCH openwrt
           ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-      - name: 4. Cache Dependencies (Speed Up!)
+      - name: 4. Cache Dependencies
         uses: actions/cache@v4
         with:
           path: openwrt/dl
@@ -53,36 +48,37 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-dl-
 
-      - name: 5. Load Custom Feeds & DIY Scripts
+      - name: 5. Load Feeds & Run DIY Script
         run: |
           cd openwrt
-          [ -e $GITHUB_WORKSPACE/$FEEDS_CONF ] && cp $GITHUB_WORKSPACE/$FEEDS_CONF feeds.conf.default
-          chmod +x $GITHUB_WORKSPACE/diy*.sh
-          $GITHUB_WORKSPACE/diy1.sh
+          # Use your feeds.conf.default if it exists
+          [ -e $GITHUB_WORKSPACE/feeds.conf.default ] && cp $GITHUB_WORKSPACE/feeds.conf.default feeds.conf.default
+          
+          # Run your custom diy.sh
+          chmod +x $GITHUB_WORKSPACE/$DIY_SH
+          $GITHUB_WORKSPACE/$DIY_SH
+          
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          $GITHUB_WORKSPACE/diy2.sh
 
       - name: 6. Load Config & Defconfig
         run: |
           [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
           cd openwrt
           make defconfig
-          # Critical: Check if the config is actually valid for R2S
-          grep "CONFIG_TARGET_rockchip=y" .config || (echo "Error: Target not set to Rockchip!" && exit 1)
+          # Safety check to ensure we are actually building for R2S
+          grep "CONFIG_TARGET_rockchip=y" .config || (echo "Error: Target is not R2S/Rockchip!" && exit 1)
 
       - name: 7. SSH Debug (Optional)
         if: github.event.inputs.ssh == 'true'
         uses: mxschmitt/action-tmate@v3
 
-      - name: 8. Download Library & Compile
+      - name: 8. Download & Compile
         id: compile
         run: |
           cd openwrt
           make download -j8
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
-          echo "::group::Build Logs"
+          echo "::group::Starting Compilation"
           make -j$(nproc) || make -j1 V=s
           echo "::endgroup::"
           echo "status=success" >> $GITHUB_OUTPUT
