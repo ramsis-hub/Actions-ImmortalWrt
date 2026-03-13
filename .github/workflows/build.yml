@@ -14,7 +14,7 @@ on:
         required: true
         default: 'immortalwrt'
       branch:
-        description: 'ImmortalWrt 仓库的分支 (R2S 建议使用 openwrt-23.05 或 master)'
+        description: 'ImmortalWrt 仓库的分支 (R2S 建议使用 openwrt-23.05)'
         type: string
         required: true
         default: 'openwrt-23.05'
@@ -27,76 +27,90 @@ on:
         type: boolean
         default: false
 
+env:
+  # Addressing the warning in your screenshot to opt-in to Node 24
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     name: 🚀 编译 (Build)
     steps:
-      - name: 下载编译所需的依赖
+      - name: 1. 清理磁盘空间 (Prevent Disk Full)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: 2. 克隆当前仓库
+        uses: actions/checkout@v4
+
+      - name: 3. 下载编译所需的依赖
         run: |
           sudo apt update
           sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
 
-      - name: 克隆当前仓库
-        uses: actions/checkout@v4
-
-      - name: 克隆 ImmortalWrt 仓库
+      - name: 4. 克隆 ImmortalWrt 源码
         uses: actions/checkout@v4
         with:
           repository: '${{ github.event.inputs.owner }}/${{ github.event.inputs.repo }}'
           ref: ${{ github.event.inputs.branch }}
           path: ImmortalWrt
 
-      - name: 运行 diy.sh
+      - name: 5. 运行 diy.sh 与更新 Feeds
         working-directory: ImmortalWrt
         run: |
-          cp -f ../diy.sh .
-          chmod +x diy.sh
-          ./diy.sh
-
-      - name: 更新并下载 feeds
-        working-directory: ImmortalWrt
-        run: |
-          cp -f ../feeds.conf.default . || true
+          # 复制自定义配置
+          [ -f ../feeds.conf.default ] && cp -f ../feeds.conf.default ./feeds.conf.default
+          [ -f ../diy.sh ] && cp -f ../diy.sh ./diy.sh && chmod +x diy.sh && ./diy.sh
+          
+          # 更新 Feeds
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 复制 .config 配置文件
-        run: cp -f .config ImmortalWrt/.config
+      - name: 6. 复制 .config 并生成配置
+        run: |
+          if [ -f .config ]; then
+            cp -f .config ImmortalWrt/.config
+            cd ImmortalWrt && make defconfig
+          else
+            echo "::error::.config 文件不存在，请检查仓库根目录！"
+            exit 1
+          fi
 
-      - name: 编译前生成配置 (Make defconfig)
-        working-directory: ImmortalWrt
-        run: make defconfig
-
-      - name: 编译前上传配置 (Artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: config-before-build
-          path: ImmortalWrt/.config
-
-      - name: 开启 SSH 远程调试 (可选)
+      - name: 7. 开启 SSH 远程调试 (可选)
         if: ${{ github.event.inputs.ssh == 'true' }}
         uses: lhotari/action-upterm@v1
         with:
           wait-timeout-minutes: 30
 
-      - name: 多线程编译
-        if: ${{ github.event.inputs.multithreading == 'true' }}
+      - name: 8. 执行编译
         working-directory: ImmortalWrt
         run: |
-          echo "Starting multithreaded build..."
-          make -j$(nproc) || make -j1 V=s
-        # Note: If -j$(nproc) fails, it automatically retries with -j1 V=s to show the error.
+          echo "::group::Starting Build"
+          if [ "${{ github.event.inputs.multithreading }}" == "true" ]; then
+            # Try multi-thread first, if fails, fallback to single-thread with detailed logs
+            make -j$(nproc) || make -j1 V=s
+          else
+            make -j1 V=s
+          fi
+          echo "::endgroup::"
 
-      - name: 单线程编译
-        if: ${{ github.event.inputs.multithreading == 'false' }}
-        working-directory: ImmortalWrt
-        run: make -j1 V=s
-
-      - name: 上传编译结果到 Artifact
+      - name: 9. 上传编译结果
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ImmortalWrt-R2S-Build
           path: ImmortalWrt/bin/targets/rockchip/armv8/*.img.gz
-          
+
+      - name: 10. 编译失败时上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-error-log
+          path: ImmortalWrt/logs/
