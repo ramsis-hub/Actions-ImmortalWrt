@@ -1,116 +1,95 @@
-name: 🚀 编译 (Build)
+name: 🚀 Build ImmortalWrt (R2S)
 
 on:
   workflow_dispatch:
     inputs:
-      owner:
-        description: 'ImmortalWrt 仓库的拥有者'
-        type: string
-        required: true
-        default: 'immortalwrt'
-      repo:
-        description: 'ImmortalWrt 仓库的名字'
-        type: string
-        required: true
-        default: 'immortalwrt'
-      branch:
-        description: 'ImmortalWrt 仓库的分支 (R2S 建议使用 openwrt-23.05)'
-        type: string
-        required: true
-        default: 'openwrt-23.05'
-      multithreading:
-        description: '开启多线程编译'
-        type: boolean
-        default: true
       ssh:
-        description: '使用 ssh 连接到编译环境'
+        description: 'SSH connection for debugging'
         type: boolean
         default: false
 
 env:
-  # Addressing the warning in your screenshot to opt-in to Node 24
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: openwrt-23.05
+  FEEDS_CONF: feeds.conf.default
+  CONFIG_FILE: .config
+  DIY_P1_SH: diy1.sh
+  DIY_P2_SH: diy2.sh
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  TZ: Asia/Shanghai
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    name: 🚀 编译 (Build)
-    steps:
-      - name: 1. 清理磁盘空间 (Prevent Disk Full)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
+    runs-on: ubuntu-22.04 # More stable for older toolchains
 
-      - name: 2. 克隆当前仓库
+    steps:
+      - name: 1. Checkout Branch
         uses: actions/checkout@v4
 
-      - name: 3. 下载编译所需的依赖
+      - name: 2. Initialization Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /cache /usr/lib/jvm
           sudo apt update
           sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          sudo timedatectl set-timezone "$TZ"
+          sudo mkdir -p /workdir
+          sudo chown $USER:$GROUPS /workdir
 
-      - name: 4. 克隆 ImmortalWrt 源码
-        uses: actions/checkout@v4
-        with:
-          repository: '${{ github.event.inputs.owner }}/${{ github.event.inputs.repo }}'
-          ref: ${{ github.event.inputs.branch }}
-          path: ImmortalWrt
-
-      - name: 5. 运行 diy.sh 与更新 Feeds
-        working-directory: ImmortalWrt
+      - name: 3. Clone Source Code
+        working-directory: /workdir
         run: |
-          # 复制自定义配置
-          [ -f ../feeds.conf.default ] && cp -f ../feeds.conf.default ./feeds.conf.default
-          [ -f ../diy.sh ] && cp -f ../diy.sh ./diy.sh && chmod +x diy.sh && ./diy.sh
-          
-          # 更新 Feeds
+          df -hT $PWD
+          git clone $REPO_URL -b $REPO_BRANCH openwrt
+          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+      - name: 4. Cache Dependencies (Speed Up!)
+        uses: actions/cache@v4
+        with:
+          path: openwrt/dl
+          key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('**/feeds.conf.default') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-dl-
+
+      - name: 5. Load Custom Feeds & DIY Scripts
+        run: |
+          cd openwrt
+          [ -e $GITHUB_WORKSPACE/$FEEDS_CONF ] && cp $GITHUB_WORKSPACE/$FEEDS_CONF feeds.conf.default
+          chmod +x $GITHUB_WORKSPACE/diy*.sh
+          $GITHUB_WORKSPACE/diy1.sh
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          $GITHUB_WORKSPACE/diy2.sh
 
-      - name: 6. 复制 .config 并生成配置
+      - name: 6. Load Config & Defconfig
         run: |
-          if [ -f .config ]; then
-            cp -f .config ImmortalWrt/.config
-            cd ImmortalWrt && make defconfig
-          else
-            echo "::error::.config 文件不存在，请检查仓库根目录！"
-            exit 1
-          fi
+          [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
+          cd openwrt
+          make defconfig
+          # Critical: Check if the config is actually valid for R2S
+          grep "CONFIG_TARGET_rockchip=y" .config || (echo "Error: Target not set to Rockchip!" && exit 1)
 
-      - name: 7. 开启 SSH 远程调试 (可选)
-        if: ${{ github.event.inputs.ssh == 'true' }}
-        uses: lhotari/action-upterm@v1
-        with:
-          wait-timeout-minutes: 30
+      - name: 7. SSH Debug (Optional)
+        if: github.event.inputs.ssh == 'true'
+        uses: mxschmitt/action-tmate@v3
 
-      - name: 8. 执行编译
-        working-directory: ImmortalWrt
+      - name: 8. Download Library & Compile
+        id: compile
         run: |
-          echo "::group::Starting Build"
-          if [ "${{ github.event.inputs.multithreading }}" == "true" ]; then
-            # Try multi-thread first, if fails, fallback to single-thread with detailed logs
-            make -j$(nproc) || make -j1 V=s
-          else
-            make -j1 V=s
-          fi
+          cd openwrt
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+          echo "::group::Build Logs"
+          make -j$(nproc) || make -j1 V=s
           echo "::endgroup::"
+          echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: 9. 上传编译结果
-        if: success()
+      - name: 9. Upload Firmware
+        if: steps.compile.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt-R2S-Build
-          path: ImmortalWrt/bin/targets/rockchip/armv8/*.img.gz
-
-      - name: 10. 编译失败时上传日志
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-error-log
-          path: ImmortalWrt/logs/
+          name: ImmortalWrt_R2S_Firmware
+          path: openwrt/bin/targets/rockchip/armv8/*.img.gz
