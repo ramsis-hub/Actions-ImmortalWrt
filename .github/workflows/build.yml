@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       ssh:
-        description: 'SSH connection for debugging'
+        description: '是否开启 SSH 远程调试'
         type: boolean
         default: false
 
@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 1. Checkout Project
+      - name: 1. 检出本地仓库
         uses: actions/checkout@v4
 
-      - name: 2. Initialization Environment
+      - name: 2. 安装编译环境
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -31,16 +31,13 @@ jobs:
           sudo apt update
           sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
           sudo timedatectl set-timezone "$TZ"
-          sudo mkdir -p /workdir
-          sudo chown $USER:$GROUPS /workdir
 
-      - name: 3. Clone Source Code
-        working-directory: /workdir
+      - name: 3. 克隆源码
         run: |
+          df -hT $PWD
           git clone $REPO_URL -b $REPO_BRANCH openwrt
-          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-      - name: 4. Cache Dependencies
+      - name: 4. 缓存加速
         uses: actions/cache@v4
         with:
           path: openwrt/dl
@@ -48,44 +45,57 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-dl-
 
-      - name: 5. Load Feeds & Run DIY Script
+      - name: 5. 更新 Feeds 并运行 DIY 脚本
         run: |
+          # 检查 feeds 配置文件
+          [ -e feeds.conf.default ] && cp feeds.conf.default openwrt/feeds.conf.default
+          
           cd openwrt
-          # Use your feeds.conf.default if it exists
-          [ -e $GITHUB_WORKSPACE/feeds.conf.default ] && cp $GITHUB_WORKSPACE/feeds.conf.default feeds.conf.default
-          
-          # Run your custom diy.sh
-          chmod +x $GITHUB_WORKSPACE/$DIY_SH
-          $GITHUB_WORKSPACE/$DIY_SH
-          
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          
+          # 运行你的 diy.sh
+          if [ -f "$GITHUB_WORKSPACE/$DIY_SH" ]; then
+            echo "正在运行 $DIY_SH..."
+            chmod +x $GITHUB_WORKSPACE/$DIY_SH
+            $GITHUB_WORKSPACE/$DIY_SH
+          else
+            echo "警告: 未找到 $DIY_SH，跳过此步。"
+          fi
 
-      - name: 6. Load Config & Defconfig
+      - name: 6. 加载配置与生成依赖
         run: |
           [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
           cd openwrt
+          # 自动补全 R2S 核心配置，防止 .config 失效
+          echo "CONFIG_TARGET_rockchip=y" >> .config
+          echo "CONFIG_TARGET_rockchip_armv8=y" >> .config
+          echo "CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y" >> .config
+          
           make defconfig
-          # Safety check to ensure we are actually building for R2S
-          grep "CONFIG_TARGET_rockchip=y" .config || (echo "Error: Target is not R2S/Rockchip!" && exit 1)
+          # 检查是否成功生成了 R2S 配置
+          grep "CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y" .config || (echo "错误: 目标设备配置无效!" && exit 1)
 
-      - name: 7. SSH Debug (Optional)
+      - name: 7. SSH 调试 (仅手动开启时触发)
         if: github.event.inputs.ssh == 'true'
         uses: mxschmitt/action-tmate@v3
 
-      - name: 8. Download & Compile
+      - name: 8. 下载包并编译
         id: compile
         run: |
           cd openwrt
           make download -j8
-          echo "::group::Starting Compilation"
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+          echo "::group::编译详细日志"
           make -j$(nproc) || make -j1 V=s
           echo "::endgroup::"
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: 9. Upload Firmware
+      - name: 9. 上传固件
         if: steps.compile.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: ImmortalWrt_R2S_Firmware
           path: openwrt/bin/targets/rockchip/armv8/*.img.gz
+          
