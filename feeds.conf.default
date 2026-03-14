@@ -1,9 +1,1 @@
-src-git packages https://github.com/immortalwrt/packages.git;openwrt-23.05
-src-git luci https://github.com/immortalwrt/luci.git;openwrt-23.05
-src-git routing https://github.com/immortalwrt/routing.git;openwrt-23.05
-src-git telephony https://github.com/immortalwrt/telephony.git;openwrt-23.05
 
-# 额外插件源（统一使用 main 分支）
-src-git openclash https://github.com/vernesong/OpenClash.git;master
-src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main
-src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall.git;main
