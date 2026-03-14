@@ -13,58 +13,82 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 1. Setup Environment
+      - name: 1. 准备环境与清理磁盘
         run: |
           sudo apt update
           sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev swig libpython3-dev wget
           sudo timedatectl set-timezone "$TZ"
+          # 清理空间防止 1GB 分区配置导致磁盘撑爆
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
 
-      - name: 2. Clone Source
+      - name: 2. 克隆源码
         run: git clone $REPO_URL -b $REPO_BRANCH openwrt
 
-      - name: 3. Force Inject Plugins (No-Git Method)
+      - name: 3. 绕过 Git：物理注入插件
         run: |
           cd openwrt
           ./scripts/feeds update -a
           
-          # Download Passwall and OpenClash as ZIPs to bypass Git Auth errors
+          # 直接下载 ZIP 压缩包，彻底消灭 "Username for github" 报错
           mkdir -p package/downloads
           
+          # Passwall 核心
           wget https://github.com/xiaorouji/openwrt-passwall/archive/refs/heads/main.zip -O package/downloads/passwall.zip
           unzip package/downloads/passwall.zip -d package/
           mv package/openwrt-passwall-main package/passwall
           
+          # Passwall 依赖包
           wget https://github.com/xiaorouji/openwrt-passwall-packages/archive/refs/heads/main.zip -O package/downloads/passwall_pkgs.zip
           unzip package/downloads/passwall_pkgs.zip -d package/
           mv package/openwrt-passwall-packages-main package/passwall_pkgs
           
+          # OpenClash
           wget https://github.com/vernesong/OpenClash/archive/refs/heads/master.zip -O package/downloads/openclash.zip
           unzip package/downloads/openclash.zip -d package/
           mv package/OpenClash-master package/openclash
 
           ./scripts/feeds install -a || true
 
-      - name: 4. Finalize Configuration
+      - name: 4. 强制注入你的 .config 
         run: |
-          [ -f ".config" ] && cp ".config" openwrt/.config
           cd openwrt
-          echo "CONFIG_TARGET_rockchip=y" >> .config
-          echo "CONFIG_TARGET_rockchip_armv8=y" >> .config
-          echo "CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y" >> .config
+          # 直接在这里写入你提供的所有配置，确保 100% 覆盖
+          cat <<EOT > .config
+          CONFIG_TARGET_rockchip=y
+          CONFIG_TARGET_rockchip_armv8=y
+          CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y
+          CONFIG_TARGET_ROOTFS_PARTSIZE=1024
+          CONFIG_PACKAGE_luci-app-openclash=y
+          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-app-cpufreq=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+          CONFIG_PACKAGE_luci-app-dockerman=y
+          CONFIG_PACKAGE_docker-compose=y
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_wget-ssl=y
+          CONFIG_PACKAGE_unzip=y
+          CONFIG_PACKAGE_tar=y
+          CONFIG_PACKAGE_parted=y
+          CONFIG_PACKAGE_resize2fs=y
+          CONFIG_PACKAGE_fdisk=y
+          CONFIG_PACKAGE_e2fsprogs=y
+          EOT
           
-          # Fix common conflicts
+          # 修复 DNSMasq 冲突
           sed -i 's/dnsmasq/dnsmasq-full/g' include/target.mk
           
           make defconfig
 
-      - name: 5. Start Compilation
+      - name: 5. 执行编译
         run: |
           cd openwrt
           make download -j8
           make -j$(nproc) || make -j1 V=s
 
-      - name: 6. Upload Result
+      - name: 6. 上传固件
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt_R2S_Final
+          name: ImmortalWrt_R2S_Success
           path: openwrt/bin/targets/rockchip/armv8/*.img.gz
