@@ -22,38 +22,45 @@ jobs:
       - name: 2. 克隆源码
         run: git clone $REPO_URL -b $REPO_BRANCH openwrt
 
-      - name: 3. 强制安装插件 (手动绕过报错点)
+      - name: 3. 强制安装插件 (修复权限与依赖)
         run: |
           cd openwrt
-          # 更新基础 feeds，但排除 passwall
+          # 更新基础 feeds
           ./scripts/feeds update -a
           
-          # 手动克隆 Passwall 到 package 目录，彻底绕过 feeds 索引错误
-          git clone https://github.com/xiaorouji/openwrt-passwall.git package/passwall
-          git clone https://github.com/xiaorouji/openwrt-passwall-packages.git package/passwall_pkgs
-          git clone https://github.com/vernesong/OpenClash.git package/openclash
+          # 物理注入插件：使用 --depth 1 减少下载量，并确保 URL 正确
+          git clone --depth 1 https://github.com/xiaorouji/openwrt-passwall.git package/passwall
+          git clone --depth 1 https://github.com/xiaorouji/openwrt-passwall-packages.git package/passwall_pkgs
+          git clone --depth 1 https://github.com/vernesong/OpenClash.git package/openclash
 
-          # 安装其余正常的 feeds
-          ./scripts/feeds install -a
+          # 自动安装依赖，如果报错则忽略（因为我们已经手动克隆了核心插件）
+          ./scripts/feeds install -a || true
 
-      - name: 4. 加载配置
+      - name: 4. 加载配置与修复 DIY
         run: |
-          [ -e .config ] && cp .config openwrt/.config
+          # 如果仓库有 .config 则使用，没有则生成默认
+          [ -f "$GITHUB_WORKSPACE/.config" ] && cp "$GITHUB_WORKSPACE/.config" openwrt/.config
+          
           cd openwrt
-          # 强制写入 R2S 核心参数
+          # 强制注入 R2S 核心参数，确保固件能启动
           echo "CONFIG_TARGET_rockchip=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y" >> .config
+          
+          # 执行必要的 DIY 修复
+          sed -i 's/dnsmasq/dnsmasq-full/g' include/target.mk
+          
           make defconfig
 
       - name: 5. 编译固件
         run: |
           cd openwrt
           make download -j8
+          # 首次编译建议使用单线程查看详细错误，但为了速度先尝试多线程
           make -j$(nproc) || make -j1 V=s
 
       - name: 6. 上传固件
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt_R2S_Fixed
+          name: ImmortalWrt_R2S_Success
           path: openwrt/bin/targets/rockchip/armv8/*.img.gz
