@@ -13,40 +13,47 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 1. 环境初始化
+      - name: 1. 环境清理与准备
         run: |
           sudo apt update
           sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev swig libpython3-dev wget
           sudo timedatectl set-timezone "$TZ"
-          # 清理磁盘空间
+          # 必须清理空间，否则 1GB 的 RootFS 无法打包成功
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
 
-      - name: 2. 克隆源码
-        run: git clone $REPO_URL -b $REPO_BRANCH openwrt
+      - name: 2. 克隆源码 (仅核心)
+        run: git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
 
-      - name: 3. 插件注入 (改用无损镜像链接)
+      - name: 3. 物理注入插件 (校准 404 与认证路径)
         run: |
           cd openwrt
           ./scripts/feeds update -a
           
-          # 创建插件目录
-          mkdir -p package/extra
-          cd package/extra
+          # 预创建目录，确保解压路径可控
+          mkdir -p package/downloads
+          
+          # Passwall 核心 (使用 main 分支，修复 404)
+          wget -O package/downloads/pw.zip https://github.com/xiaorouji/openwrt-passwall/archive/refs/heads/main.zip
+          unzip -q package/downloads/pw.zip -d package/
+          mv package/openwrt-passwall-main package/passwall
+          
+          # Passwall 依赖包 (使用 main 分支)
+          wget -O package/downloads/pw_pkg.zip https://github.com/xiaorouji/openwrt-passwall-packages/archive/refs/heads/main.zip
+          unzip -q package/downloads/pw_pkg.zip -d package/
+          mv package/openwrt-passwall-packages-main package/passwall_pkgs
+          
+          # OpenClash (使用 master 分支)
+          wget -O package/downloads/oc.zip https://github.com/vernesong/OpenClash/archive/refs/heads/master.zip
+          unzip -q package/downloads/oc.zip -d package/
+          mv package/OpenClash-master package/openclash
 
-          # 使用特定的代理/镜像下载方式，彻底避开 Git 128 错误
-          # Passwall
-          git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall.git passwall
-          # Passwall 依赖包 (改用不同的下载路径避开重定向)
-          git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall-packages.git passwall_pkgs
-          # OpenClash
-          git clone --depth=1 https://github.com/vernesong/OpenClash.git openclash
-
-          cd ../..
+          # 强制安装其余 feeds，忽略冲突
           ./scripts/feeds install -a || true
 
-      - name: 4. 强制写入配置 (硬编码保底)
+      - name: 4. 配置注入与 DNS 修复
         run: |
           cd openwrt
+          # 直接覆盖注入你的 .config，确保 1024M 分区生效
           cat <<EOT > .config
           CONFIG_TARGET_rockchip=y
           CONFIG_TARGET_rockchip_armv8=y
@@ -70,18 +77,20 @@ jobs:
           CONFIG_PACKAGE_e2fsprogs=y
           EOT
           
-          # 修复核心冲突
+          # 修复 Passwall 编译必报的 dnsmasq 冲突
           sed -i 's/dnsmasq/dnsmasq-full/g' include/target.mk
           make defconfig
 
-      - name: 5. 编译
+      - name: 5. 编译固件
         run: |
           cd openwrt
           make download -j8
+          # 核心步骤，由于配置较多，先尝试多线程，失败则自动转单线程报错
           make -j$(nproc) || make -j1 V=s
 
-      - name: 6. 上传
+      - name: 6. 固件收集
         uses: actions/upload-artifact@v4
         with:
           name: ImmortalWrt_R2S_Final
           path: openwrt/bin/targets/rockchip/armv8/*.img.gz
+          
