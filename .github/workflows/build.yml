@@ -27,12 +27,26 @@ jobs:
       - name: 3. Clone Source
         run: git clone $REPO_URL -b $REPO_BRANCH openwrt
 
-      - name: 4. Update Feeds & DIY
+      - name: 4. Update Feeds & Force Fix
         run: |
-          [ -e feeds.conf.default ] && cp feeds.conf.default openwrt/feeds.conf.default
+          # 优先使用官方默认 feeds，排除干扰
           cd openwrt
+          rm -f feeds.conf.default
+          echo "src-git packages https://github.com/immortalwrt/packages.git;openwrt-23.05" > feeds.conf.default
+          echo "src-git luci https://github.com/immortalwrt/luci.git;openwrt-23.05" >> feeds.conf.default
+          echo "src-git routing https://github.com/immortalwrt/routing.git;openwrt-23.05" >> feeds.conf.default
+          echo "src-git telephony https://github.com/immortalwrt/telephony.git;openwrt-23.05" >> feeds.conf.default
+          
+          # 手动添加你需要的额外插件，强制指定 main 分支
+          echo "src-git openclash https://github.com/vernesong/OpenClash.git;master" >> feeds.conf.default
+          echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main" >> feeds.conf.default
+          echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall.git;main" >> feeds.conf.default
+
           ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          
+          # 如果安装失败，强制删除报错的 index 再试一次
+          ./scripts/feeds install -a || (rm -rf feeds/*.index && ./scripts/feeds install -a)
+          
           if [ -f "$GITHUB_WORKSPACE/$DIY_SH" ]; then
             chmod +x $GITHUB_WORKSPACE/$DIY_SH
             $GITHUB_WORKSPACE/$DIY_SH
@@ -42,6 +56,8 @@ jobs:
         run: |
           [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
           cd openwrt
+          # 强制注入 R2S 核心参数
+          sed -i '/CONFIG_TARGET_rockchip/d' .config
           echo "CONFIG_TARGET_rockchip=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y" >> .config
