@@ -6,8 +6,6 @@ on:
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-23.05
-  CONFIG_FILE: .config
-  DIY_SH: diy.sh
   TZ: Asia/Shanghai
 
 jobs:
@@ -15,62 +13,47 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 1. Checkout
-        uses: actions/checkout@v4
-
-      - name: 2. Env Init
+      - name: 1. 环境准备
         run: |
           sudo apt update
-          sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev swig libpython3-dev
           sudo timedatectl set-timezone "$TZ"
 
-      - name: 3. Clone Source
+      - name: 2. 克隆源码
         run: git clone $REPO_URL -b $REPO_BRANCH openwrt
 
-      - name: 4. Update Feeds & Force Fix
+      - name: 3. 强制安装插件 (手动绕过报错点)
         run: |
-          # 优先使用官方默认 feeds，排除干扰
           cd openwrt
-          rm -f feeds.conf.default
-          echo "src-git packages https://github.com/immortalwrt/packages.git;openwrt-23.05" > feeds.conf.default
-          echo "src-git luci https://github.com/immortalwrt/luci.git;openwrt-23.05" >> feeds.conf.default
-          echo "src-git routing https://github.com/immortalwrt/routing.git;openwrt-23.05" >> feeds.conf.default
-          echo "src-git telephony https://github.com/immortalwrt/telephony.git;openwrt-23.05" >> feeds.conf.default
-          
-          # 手动添加你需要的额外插件，强制指定 main 分支
-          echo "src-git openclash https://github.com/vernesong/OpenClash.git;master" >> feeds.conf.default
-          echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main" >> feeds.conf.default
-          echo "src-git passwall_luci https://github.com/xiaorouji/openwrt-passwall.git;main" >> feeds.conf.default
-
+          # 更新基础 feeds，但排除 passwall
           ./scripts/feeds update -a
           
-          # 如果安装失败，强制删除报错的 index 再试一次
-          ./scripts/feeds install -a || (rm -rf feeds/*.index && ./scripts/feeds install -a)
-          
-          if [ -f "$GITHUB_WORKSPACE/$DIY_SH" ]; then
-            chmod +x $GITHUB_WORKSPACE/$DIY_SH
-            $GITHUB_WORKSPACE/$DIY_SH
-          fi
+          # 手动克隆 Passwall 到 package 目录，彻底绕过 feeds 索引错误
+          git clone https://github.com/xiaorouji/openwrt-passwall.git package/passwall
+          git clone https://github.com/xiaorouji/openwrt-passwall-packages.git package/passwall_pkgs
+          git clone https://github.com/vernesong/OpenClash.git package/openclash
 
-      - name: 5. Generate Config
+          # 安装其余正常的 feeds
+          ./scripts/feeds install -a
+
+      - name: 4. 加载配置
         run: |
-          [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
+          [ -e .config ] && cp .config openwrt/.config
           cd openwrt
-          # 强制注入 R2S 核心参数
-          sed -i '/CONFIG_TARGET_rockchip/d' .config
+          # 强制写入 R2S 核心参数
           echo "CONFIG_TARGET_rockchip=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y" >> .config
           make defconfig
 
-      - name: 6. Build
+      - name: 5. 编译固件
         run: |
           cd openwrt
           make download -j8
           make -j$(nproc) || make -j1 V=s
 
-      - name: 7. Upload
+      - name: 6. 上传固件
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt_R2S
+          name: ImmortalWrt_R2S_Fixed
           path: openwrt/bin/targets/rockchip/armv8/*.img.gz
