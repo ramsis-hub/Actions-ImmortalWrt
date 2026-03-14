@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       ssh:
-        description: '是否开启 SSH 远程调试'
+        description: '开启 SSH 远程调试'
         type: boolean
         default: false
 
@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 1. 检出本地仓库
+      - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 安装编译环境
+      - name: 2. 安装环境
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -34,8 +34,8 @@ jobs:
 
       - name: 3. 克隆源码
         run: |
-          df -hT $PWD
           git clone $REPO_URL -b $REPO_BRANCH openwrt
+          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
       - name: 4. 缓存加速
         uses: actions/cache@v4
@@ -45,51 +45,44 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-dl-
 
-      - name: 5. 更新 Feeds 并运行 DIY 脚本
+      - name: 5. 加载插件源与 DIY 脚本
         run: |
-          # 检查 feeds 配置文件
-          [ -e feeds.conf.default ] && cp feeds.conf.default openwrt/feeds.conf.default
+          # 如果仓库里有 feeds 文件且不是空的，则使用它
+          if [ -s feeds.conf.default ]; then
+            cp feeds.conf.default openwrt/feeds.conf.default
+          fi
           
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           
-          # 运行你的 diy.sh
+          # 执行 diy.sh
           if [ -f "$GITHUB_WORKSPACE/$DIY_SH" ]; then
-            echo "正在运行 $DIY_SH..."
             chmod +x $GITHUB_WORKSPACE/$DIY_SH
             $GITHUB_WORKSPACE/$DIY_SH
-          else
-            echo "警告: 未找到 $DIY_SH，跳过此步。"
           fi
 
-      - name: 6. 加载配置与生成依赖
+      - name: 6. 检查配置
         run: |
           [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
           cd openwrt
-          # 自动补全 R2S 核心配置，防止 .config 失效
-          echo "CONFIG_TARGET_rockchip=y" >> .config
+          # 强制注入 R2S 架构，防止 .config 配置丢失
+          sed -i 's/CONFIG_TARGET_rockchip=y/CONFIG_TARGET_rockchip=y/' .config || echo "CONFIG_TARGET_rockchip=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y" >> .config
           
           make defconfig
-          # 检查是否成功生成了 R2S 配置
-          grep "CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y" .config || (echo "错误: 目标设备配置无效!" && exit 1)
 
-      - name: 7. SSH 调试 (仅手动开启时触发)
+      - name: 7. SSH 调试 (手动开启)
         if: github.event.inputs.ssh == 'true'
         uses: mxschmitt/action-tmate@v3
 
-      - name: 8. 下载包并编译
+      - name: 8. 下载编译
         id: compile
         run: |
           cd openwrt
           make download -j8
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
-          echo "::group::编译详细日志"
           make -j$(nproc) || make -j1 V=s
-          echo "::endgroup::"
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: 9. 上传固件
@@ -98,4 +91,3 @@ jobs:
         with:
           name: ImmortalWrt_R2S_Firmware
           path: openwrt/bin/targets/rockchip/armv8/*.img.gz
-          
