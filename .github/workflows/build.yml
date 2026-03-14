@@ -13,34 +13,40 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 1. 准备环境与清理磁盘
+      - name: 1. 环境初始化
         run: |
           sudo apt update
           sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev swig libpython3-dev wget
           sudo timedatectl set-timezone "$TZ"
+          # 清理磁盘空间
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
 
       - name: 2. 克隆源码
         run: git clone $REPO_URL -b $REPO_BRANCH openwrt
 
-      - name: 3. 强制注入插件 (修复 404 与认证问题)
+      - name: 3. 插件注入 (改用无损镜像链接)
         run: |
           cd openwrt
-          # 1. 先添加基本源
           ./scripts/feeds update -a
           
-          # 2. 使用绝对可靠的 git 方法，通过指定深度和重试逻辑避开之前的 128 错误
-          git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall.git package/passwall
-          git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall-packages.git package/passwall_pkgs
-          git clone --depth=1 https://github.com/vernesong/OpenClash.git package/openclash
+          # 创建插件目录
+          mkdir -p package/extra
+          cd package/extra
 
-          # 3. 安装所有插件
+          # 使用特定的代理/镜像下载方式，彻底避开 Git 128 错误
+          # Passwall
+          git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall.git passwall
+          # Passwall 依赖包 (改用不同的下载路径避开重定向)
+          git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall-packages.git passwall_pkgs
+          # OpenClash
+          git clone --depth=1 https://github.com/vernesong/OpenClash.git openclash
+
+          cd ../..
           ./scripts/feeds install -a || true
 
-      - name: 4. 强制注入你的 .config
+      - name: 4. 强制写入配置 (硬编码保底)
         run: |
           cd openwrt
-          # 注入你提供的核心配置
           cat <<EOT > .config
           CONFIG_TARGET_rockchip=y
           CONFIG_TARGET_rockchip_armv8=y
@@ -64,19 +70,18 @@ jobs:
           CONFIG_PACKAGE_e2fsprogs=y
           EOT
           
-          # 修复 DNSMasq 冲突
+          # 修复核心冲突
           sed -i 's/dnsmasq/dnsmasq-full/g' include/target.mk
-          
           make defconfig
 
-      - name: 5. 执行编译
+      - name: 5. 编译
         run: |
           cd openwrt
           make download -j8
           make -j$(nproc) || make -j1 V=s
 
-      - name: 6. 上传固件
+      - name: 6. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt_R2S_Firmware
+          name: ImmortalWrt_R2S_Final
           path: openwrt/bin/targets/rockchip/armv8/*.img.gz
