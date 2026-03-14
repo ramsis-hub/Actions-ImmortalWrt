@@ -1,7 +1,7 @@
 #!/bin/bash
-
-# 1. 修复 DNSMasq 冲突
+# 修复 DNSMasq 冲突
 sed -i 's/dnsmasq/dnsmasq-full/g' include/target.mk
+
 
 # 2. 创建 R2S 自动扩容与 Swap 脚本 (写入固件内，不在编译服务器运行)
 mkdir -p files/etc/uci-defaults
