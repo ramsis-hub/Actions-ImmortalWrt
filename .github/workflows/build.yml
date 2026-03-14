@@ -13,54 +13,58 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 1. 环境准备
+      - name: 1. Setup Environment
         run: |
           sudo apt update
-          sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev swig libpython3-dev
+          sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev swig libpython3-dev wget
           sudo timedatectl set-timezone "$TZ"
 
-      - name: 2. 克隆源码
+      - name: 2. Clone Source
         run: git clone $REPO_URL -b $REPO_BRANCH openwrt
 
-      - name: 3. 强制安装插件 (修复权限与依赖)
+      - name: 3. Force Inject Plugins (No-Git Method)
         run: |
           cd openwrt
-          # 更新基础 feeds
           ./scripts/feeds update -a
           
-          # 物理注入插件：使用 --depth 1 减少下载量，并确保 URL 正确
-          git clone --depth 1 https://github.com/xiaorouji/openwrt-passwall.git package/passwall
-          git clone --depth 1 https://github.com/xiaorouji/openwrt-passwall-packages.git package/passwall_pkgs
-          git clone --depth 1 https://github.com/vernesong/OpenClash.git package/openclash
+          # Download Passwall and OpenClash as ZIPs to bypass Git Auth errors
+          mkdir -p package/downloads
+          
+          wget https://github.com/xiaorouji/openwrt-passwall/archive/refs/heads/main.zip -O package/downloads/passwall.zip
+          unzip package/downloads/passwall.zip -d package/
+          mv package/openwrt-passwall-main package/passwall
+          
+          wget https://github.com/xiaorouji/openwrt-passwall-packages/archive/refs/heads/main.zip -O package/downloads/passwall_pkgs.zip
+          unzip package/downloads/passwall_pkgs.zip -d package/
+          mv package/openwrt-passwall-packages-main package/passwall_pkgs
+          
+          wget https://github.com/vernesong/OpenClash/archive/refs/heads/master.zip -O package/downloads/openclash.zip
+          unzip package/downloads/openclash.zip -d package/
+          mv package/OpenClash-master package/openclash
 
-          # 自动安装依赖，如果报错则忽略（因为我们已经手动克隆了核心插件）
           ./scripts/feeds install -a || true
 
-      - name: 4. 加载配置与修复 DIY
+      - name: 4. Finalize Configuration
         run: |
-          # 如果仓库有 .config 则使用，没有则生成默认
-          [ -f "$GITHUB_WORKSPACE/.config" ] && cp "$GITHUB_WORKSPACE/.config" openwrt/.config
-          
+          [ -f ".config" ] && cp ".config" openwrt/.config
           cd openwrt
-          # 强制注入 R2S 核心参数，确保固件能启动
           echo "CONFIG_TARGET_rockchip=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8=y" >> .config
           echo "CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r2s=y" >> .config
           
-          # 执行必要的 DIY 修复
+          # Fix common conflicts
           sed -i 's/dnsmasq/dnsmasq-full/g' include/target.mk
           
           make defconfig
 
-      - name: 5. 编译固件
+      - name: 5. Start Compilation
         run: |
           cd openwrt
           make download -j8
-          # 首次编译建议使用单线程查看详细错误，但为了速度先尝试多线程
           make -j$(nproc) || make -j1 V=s
 
-      - name: 6. 上传固件
+      - name: 6. Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt_R2S_Success
+          name: ImmortalWrt_R2S_Final
           path: openwrt/bin/targets/rockchip/armv8/*.img.gz
